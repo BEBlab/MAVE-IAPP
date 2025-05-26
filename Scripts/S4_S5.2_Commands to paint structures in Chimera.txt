@@ -1,0 +1,7 @@
+#Commands to introduce in the command line of Chimera to get PDB structures painted by the mean of the nucleation score in each position. Example for PDB: 6Y1A. Chains and models selected will change depending on each PDB structure.
+
+background solid white
+~modeldisp #0.2-#0.10
+~ribbon ~ :.A, .B
+defattr browse #This will open a browser file, where attr_file_IAPP_mean needs to be selected and loaded. 
+rangecolor mean min #de5317 0 #8f8f8f max #0f339e
