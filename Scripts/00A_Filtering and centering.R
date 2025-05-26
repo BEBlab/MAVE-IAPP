@@ -72,7 +72,11 @@ non_nuc_df <- non_nuc_df[!(non_nuc_df$aa_seq %in% all_variants_df$aa_seq), ]
 
 all_var_df <- full_join(all_variants_df, non_nuc_df)
 all_var_df$nscore_c <- all_var_df$fitness+(-mean_syn_1codon)
-
 write.table(all_var_df, file="IAPP_indels_centered_data.tsv", sep="\t", quote = F, row.names = F)
 
+synonymous$nt_seq <- toupper(synonymous$nt_seq)
+AllVariantsDesigned.df$aa_seq <- unlist(AllVariantsDesigned.df$aa_seq)
+synonymous <- inner_join(synonymous, AllVariantsDesigned.df, by = c("nt_seq", "aa_seq"))
+synonymous$Pos <- sapply(synonymous$name, function(i) as.numeric(strsplit(i, split = "_")[[1]][2]))
+write.table(synonymous, file = "IAPP_synonymous.tsv", sep = "\t", quote = F, row.names = F)
 
