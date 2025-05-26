@@ -5,7 +5,7 @@ library(dplyr)
 library(ggpubr)
 
 # Load data
-load("../INDEL_datasets.RData")
+load("INDEL_datasets.RData")
 
 # Parse and preprocess PolSlip.df
 # Extract insertion position from name
