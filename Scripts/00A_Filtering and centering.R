@@ -73,6 +73,6 @@ non_nuc_df <- non_nuc_df[!(non_nuc_df$aa_seq %in% all_variants_df$aa_seq), ]
 all_var_df <- full_join(all_variants_df, non_nuc_df)
 all_var_df$nscore_c <- all_var_df$fitness+(-mean_syn_1codon)
 
-write.table(all_var_df, file="MBG_indels_processed_data.tsv", sep="\t", quote = F, row.names = F)
+write.table(all_var_df, file="IAPP_indels_centered_data.tsv", sep="\t", quote = F, row.names = F)
 
 
