@@ -25,7 +25,7 @@ df_sasa_long <- melt(df_sasa, id.vars = "Pos", variable.name = "structure", valu
 df_sasa_wide <- spread(df_sasa_long, key = structure, value = ASA)
 
 # Load nucleation scores and compute per-position mean
-load("../INDEL_datasets.RData")
+load("INDEL_datasets.RData")
 ns_summary <- Singles.df %>%
   group_by(Pos) %>%
   summarize(Mean = mean(nscore_c, na.rm = TRUE), .groups = "drop")
