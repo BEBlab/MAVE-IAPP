@@ -7,5 +7,6 @@ Raw sequencing data and the processed data table required for running the pipeli
 - Required data folder contains all the required data to run all the scripts found in the repository.
   
 All the scripts have been run in R version 4.4.3. 
+UCSF Chimera - version 1.14 - has been used to colour PDB structures.
 
-The run-time is ~1h in total on a normal desktop computer. 
+The run-time is ~2h in total on a normal desktop computer. 
