@@ -1,0 +1,185 @@
+# Load required libraries
+library(ggpubr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(ggsignif)
+library(grid)
+
+# --- Load and prepare NS_inc, NS_dec, WT datasets for HbA1c levels ---
+NS_inc <- read.csv("NS_inc_HbA1c_levels.csv", col.names = c("HbA1c_levels"))
+NS_inc$cat_FDR <- "NS+"
+
+NS_dec <- read.csv("NS_dec_Hb1Ac_levels.csv", col.names = c("HbA1c_levels"))
+NS_dec$cat_FDR <- "NS-"
+
+WT <- read.csv("WT-like_Hb1Ac_levels.csv", col.names = c("HbA1c_levels"))
+WT$cat_FDR <- "WT-like"
+
+# Combine datasets and filter HbA1c levels < 184 mmol/mol (outlier removal?)
+NS_HbGly <- rbind(NS_dec, NS_inc, WT)
+NS_HbGly <- NS_HbGly[NS_HbGly$HbA1c_levels < 184, ]
+
+# --- Load UKBB allele frequency data for HbA1c groups ---
+HbA1c_low <- read.csv("UKBB_alelle_frequency_Hb1Ac_under42.csv")
+HbA1c_low$HbA1c <- "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)"
+
+HbA1c_med <- read.csv("UKBB_alelle_frequency_Hb1Ac_between42and48.csv")
+HbA1c_med$HbA1c <- "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)"
+
+HbA1c_high <- read.csv("UKBB_alelle_frequency_Hb1Ac_over48.csv")
+HbA1c_high$HbA1c <- "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)"
+
+HbA1c_df <- rbind(HbA1c_med, HbA1c_high, HbA1c_low)
+
+# --- Prepare codon and amino acid position mapping ---
+first_chr_pos <- 21378256
+last_chr_pos <- 21378366
+seq_3 <- seq(first_chr_pos, last_chr_pos, 3)
+table_aa_seq <- data.frame(Pos = seq(1, 37), first_chr_pos_in_codon = seq_3)
+table_aa_seq$list_chr_pos_in_codon <- lapply(table_aa_seq$first_chr_pos_in_codon, function(i) seq(i, i + 2))
+
+# Wildtype nucleotide and amino acid sequences
+nt_seq <- "AAATGCAACACTGCCACATGTGCAACGCAGCGCCTGGCAAATTTTTTAGTTCATTCCAGCAACAACTTTGGTGCCATTCTCTCATCTACCAACGTGGGATCCAATACATAT"
+codon <- str_extract_all(nt_seq, ".{3}")[[1]]
+WT_AA <- strsplit("KCNTATCATQRLANFLVHSSNNFGAILSSTNVGSNTY", "")[[1]]
+
+# Bind codon and AA info
+table_aa_seq <- cbind(table_aa_seq, codon, WT_AA)
+
+# --- Join mutation data with allele frequencies ---
+merged_df <- table_aa_seq %>%
+  unnest(cols = c(list_chr_pos_in_codon)) %>%
+  right_join(HbA1c_df, by = c("list_chr_pos_in_codon" = "Position")) %>%
+  group_by(Pos)
+
+# Create codon position info for mutation application
+tcodon <- data.frame(
+  Codon_position = rep(1:3, 37),
+  Chromosome_position = seq(first_chr_pos, last_chr_pos)
+)
+
+merged_df <- inner_join(merged_df, tcodon, by = c("list_chr_pos_in_codon" = "Chromosome_position"))
+
+# Apply mutations to codons
+merged_df$codon <- as.character(merged_df$codon)
+merged_df$Mutated_codon <- mapply(function(txt, pos, repl) {
+  str_sub(txt, pos, pos) <- repl
+  txt
+}, merged_df$codon, merged_df$Codon_position, merged_df$Alternate)
+
+# Translate mutated codons to amino acids
+codon_table <- c(
+  "TTT"="F","TTC"="F","TTA"="L","TTG"="L",
+  "CTT"="L","CTC"="L","CTA"="L","CTG"="L",
+  "ATT"="I","ATC"="I","ATA"="I","ATG"="M",
+  "GTT"="V","GTC"="V","GTA"="V","GTG"="V",
+  "TCT"="S","TCC"="S","TCA"="S","TCG"="S",
+  "CCT"="P","CCC"="P","CCA"="P","CCG"="P",
+  "ACT"="T","ACC"="T","ACA"="T","ACG"="T",
+  "GCT"="A","GCC"="A","GCA"="A","GCG"="A",
+  "TAT"="Y","TAC"="Y","TAA"="Stop","TAG"="Stop",
+  "CAT"="H","CAC"="H","CAA"="Q","CAG"="Q",
+  "AAT"="N","AAC"="N","AAA"="K","AAG"="K",
+  "GAT"="D","GAC"="D","GAA"="E","GAG"="E",
+  "TGT"="C","TGC"="C","TGA"="Stop","TGG"="W",
+  "CGT"="R","CGC"="R","CGA"="R","CGG"="R",
+  "AGT"="S","AGC"="S","AGA"="R","AGG"="R",
+  "GGT"="G","GGC"="G","GGA"="G","GGG"="G"
+)
+merged_df$Mut_aa <- codon_table[merged_df$Mutated_codon]
+merged_df$mut_ID <- paste0(merged_df$WT_AA, merged_df$Pos, merged_df$Mut_aa)
+
+# --- Load experimental nucleation scores and filter ---
+load("../INDEL_datasets.RData")
+
+# Keep only non-noisy amino acid sequences
+Singles.df$mut_ID <- paste0(Singles.df$WT_AA, Singles.df$Pos, Singles.df$Mut)
+
+# Join mutation nucleation scores with merged data
+merged_df_sing <- inner_join(merged_df, Singles.df)
+
+# Reorder HbA1c factor levels for plotting
+merged_df_sing$HbA1c <- factor(merged_df_sing$HbA1c, levels = c(
+  "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)", 
+  "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)", 
+  "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)"
+))
+
+# Define colors for categories
+colors_fdr <- rev(c("gray60", "darkblue", "darkred"))
+
+# Rescale allele frequency for plotting sizes
+merged_df_sing$Cohort.AF_rescaled <- merged_df_sing$Cohort.AF * 1e5
+
+# Split data by HbA1c groups
+lowHb <- filter(merged_df_sing, HbA1c == "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)")
+medHb <- filter(merged_df_sing, HbA1c == "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)")
+highHb <- filter(merged_df_sing, HbA1c == "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)")
+
+# Repeat nucleation scores by allele count for statistical tests
+store_low <- unlist(lapply(seq_len(nrow(lowHb)), function(i) rep(lowHb$nscore_c[i], lowHb$Cohort.Allele.Count[i])))
+store_med <- unlist(lapply(seq_len(nrow(medHb)), function(i) rep(medHb$nscore_c[i], medHb$Cohort.Allele.Count[i])))
+store_high <- unlist(lapply(seq_len(nrow(highHb)), function(i) rep(highHb$nscore_c[i], highHb$Cohort.Allele.Count[i])))
+
+# Plot nucleation scores colored by NS category and sized by allele frequency
+size_range <- c(min(merged_df_sing$Cohort.AF_rescaled), max(merged_df_sing$Cohort.AF_rescaled))
+size_breaks <- seq(size_range[1], size_range[2], length.out = 5)
+original_size_labels <- seq(from = size_range[1] / 1e5, to = size_range[2] / 1e5, length.out = 5)
+
+p <- ggplot(merged_df_sing, aes(x = HbA1c, y = nscore_c, colour = category_fdr)) +
+  geom_point(aes(size = Cohort.AF_rescaled), alpha = 0.4) +
+  scale_color_manual(values = colors_fdr, name = "") +
+  scale_size_continuous(range = size_range, breaks = size_breaks, labels = scales::scientific(original_size_labels)) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), panel.grid = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Nucleation score") +
+  geom_hline(yintercept = 0, linetype = "dotted")
+p
+ggsave(p, filename = "ns_af_hba1c_v5.pdf")
+
+# --- Repeat similar analysis for diabetes diagnosis (case/control) ---
+diag0 <- read.csv("ukbb_iapp_allelefrequency_in_diabetesNO.csv")
+diag0$Diabetes <- "No diabetes\n(n = 429535)"
+diag1 <- read.csv("ukbb_iapp_allelefrequency_in_diabetesYES.csv")
+diag1$Diabetes <- "Diabetes\n(n = 19120)"
+
+diag_df <- rbind(diag0, diag1)
+
+# Join mutation nucleation scores
+merged_df_diag <- table_aa_seq %>%
+  unnest(cols = c(list_chr_pos_in_codon)) %>%
+  right_join(diag_df, by = c("list_chr_pos_in_codon" = "Position")) %>%
+  inner_join(tcodon, by = c("list_chr_pos_in_codon" = "Chromosome_position")) %>%
+  mutate(Mutated_codon = mapply(function(txt, pos, repl) {
+    str_sub(txt, pos, pos) <- repl
+    txt
+  }, codon, Codon_position, Alternate)) %>%
+  mutate(Mut_aa = codon_table[Mutated_codon],
+         mut_ID = paste0(WT_AA, Pos, Mut_aa)) %>%
+  inner_join(Singles.df, by = "mut_ID")
+
+merged_df_diag$Diabetes <- factor(merged_df_diag$Diabetes, levels = c("No diabetes\n(n = 429535)", "Diabetes\n(n = 19120)"))
+merged_df_diag$Cohort.AF_rescaled <- merged_df_diag$Cohort.AF * 1e5
+
+# Split by diabetes status
+diag0_df <- filter(merged_df_diag, Diabetes == "No diabetes\n(n = 429535)")
+diag1_df <- filter(merged_df_diag, Diabetes == "Diabetes\n(n = 19120)")
+
+# Repeat nucleation scores by allele counts for statistics
+store_diag0 <- unlist(lapply(seq_len(nrow(diag0_df)), function(i) rep(diag0_df$nscore_c[i], diag0_df$Cohort.Allele.Count[i])))
+store_diag1 <- unlist(lapply(seq_len(nrow(diag1_df)), function(i) rep(diag1_df$nscore_c[i], diag1_df$Cohort.Allele.Count[i])))
+
+# Plot nucleation scores by diabetes diagnosis
+p_diag <- ggplot(merged_df_diag, aes(x = Diabetes, y = nscore_c, colour = category_fdr)) +
+  geom_point(aes(size = Cohort.AF_rescaled), alpha = 0.4) +
+  scale_color_manual(values = colors_fdr, name = "") +
+  scale_size_continuous(range = size_range, breaks = size_breaks, labels = scales::scientific(original_size_labels)) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), panel.grid = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Nucleation score") +
+  geom_hline(yintercept = 0, linetype = "dotted") 
+p_diag
+ggsave(p_diag, filename = "ns_af_diabetes_v5.pdf")
