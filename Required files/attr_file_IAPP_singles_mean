@@ -1,4 +1,4 @@
-attribute: median	
+attribute: mean	
 recipient: residues	
 	 : 1 	 0.273233325618395
 	 : 2 	 -4.7493928352627
