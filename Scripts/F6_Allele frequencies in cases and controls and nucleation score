@@ -1,0 +1,343 @@
+
+# NOTE: UK Biobank (UKBB) data used in this analysis is subject to data use restrictions and cannot be shared publicly. Therefore, the associated data files are not included in the shared project folder.
+
+# Load required libraries
+library(ggpubr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(ggsignif)
+library(grid)
+require(readxl)
+require(reshape2)
+require(ggpubr)
+require(scales)
+require(logistf)
+
+##Allele frequency plots and nucleation scores
+# --- Load allele frequency datasets diabetes for diagnosis status and HbA1c levels ---
+diag0 <- read.csv("ukbb_iapp_allelefrequency_in_diabetesNO.csv")
+diag0$Diabetes <- "No diabetes\n(n = 429535)"
+diag1 <- read.csv("ukbb_iapp_allelefrequency_in_diabetesYES.csv")
+diag1$Diabetes <- "Diabetes\n(n = 19120)"
+diag_df <- rbind(diag0, diag1)
+
+HbA1c_low <- read.csv("UKBB_alelle_frequency_Hb1Ac_under42.csv")
+HbA1c_low$HbA1c <- "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)"
+HbA1c_med <- read.csv("UKBB_alelle_frequency_Hb1Ac_between42and48.csv")
+HbA1c_med$HbA1c <- "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)"
+HbA1c_high <- read.csv("UKBB_alelle_frequency_Hb1Ac_over48.csv")
+HbA1c_high$HbA1c <- "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)"
+HbA1c_df <- rbind(HbA1c_med, HbA1c_high, HbA1c_low)
+
+#Prepare codon and amino acid position mapping
+first_chr_pos <- 21378256
+last_chr_pos <- 21378366
+seq_3 <- seq(first_chr_pos, last_chr_pos, 3)
+table_aa_seq <- data.frame(Pos = seq(1, 37), first_chr_pos_in_codon = seq_3)
+table_aa_seq$list_chr_pos_in_codon <- lapply(table_aa_seq$first_chr_pos_in_codon, function(i) seq(i, i + 2))
+codon_table <- c("TTT"="F","TTC"="F","TTA"="L","TTG"="L",
+  "CTT"="L","CTC"="L","CTA"="L","CTG"="L",
+  "ATT"="I","ATC"="I","ATA"="I","ATG"="M",
+  "GTT"="V","GTC"="V","GTA"="V","GTG"="V",
+  "TCT"="S","TCC"="S","TCA"="S","TCG"="S",
+  "CCT"="P","CCC"="P","CCA"="P","CCG"="P",
+  "ACT"="T","ACC"="T","ACA"="T","ACG"="T",
+  "GCT"="A","GCC"="A","GCA"="A","GCG"="A",
+  "TAT"="Y","TAC"="Y","TAA"="Stop","TAG"="Stop",
+  "CAT"="H","CAC"="H","CAA"="Q","CAG"="Q",
+  "AAT"="N","AAC"="N","AAA"="K","AAG"="K",
+  "GAT"="D","GAC"="D","GAA"="E","GAG"="E",
+  "TGT"="C","TGC"="C","TGA"="Stop","TGG"="W",
+  "CGT"="R","CGC"="R","CGA"="R","CGG"="R",
+  "AGT"="S","AGC"="S","AGA"="R","AGG"="R",
+  "GGT"="G","GGC"="G","GGA"="G","GGG"="G")
+
+# Wildtype nucleotide and amino acid sequences and aesthetics
+nt_seq <- "AAATGCAACACTGCCACATGTGCAACGCAGCGCCTGGCAAATTTTTTAGTTCATTCCAGCAACAACTTTGGTGCCATTCTCTCATCTACCAACGTGGGATCCAATACATAT"
+codon <- str_extract_all(nt_seq, ".{3}")[[1]]
+WT_AA <- strsplit("KCNTATCATQRLANFLVHSSNNFGAILSSTNVGSNTY", "")[[1]]
+colors_fdr <- rev(c("gray60", "darkblue", "darkred"))
+
+# Bind codon and AA info
+table_aa_seq <- cbind(table_aa_seq, codon, WT_AA)
+
+# --- Join mutation data with allele frequencies for HbA1c levels---
+merged_df_HbA1c <- table_aa_seq %>%
+  unnest(cols = c(list_chr_pos_in_codon)) %>%
+  right_join(HbA1c_df, by = c("list_chr_pos_in_codon" = "Position")) %>%
+  group_by(Pos)
+
+# Create codon position info for mutation application
+tcodon <- data.frame(
+  Codon_position = rep(1:3, 37),
+  Chromosome_position = seq(first_chr_pos, last_chr_pos))
+
+merged_df_HbA1c <- inner_join(merged_df_HbA1c, tcodon, by = c("list_chr_pos_in_codon" = "Chromosome_position"))
+
+# Apply mutations to codons
+merged_df_HbA1c$codon <- as.character(merged_df_HbA1c$codon)
+merged_df_HbA1c$Mutated_codon <- mapply(function(txt, pos, repl) {
+  str_sub(txt, pos, pos) <- repl
+  txt}, merged_df_HbA1c$codon, merged_df_HbA1c$Codon_position, merged_df_HbA1c$Alternate)
+merged_df_HbA1c$Mut_aa <- codon_table[merged_df_HbA1c$Mutated_codon]
+merged_df_HbA1c$mut_ID <- paste0(merged_df_HbA1c$WT_AA, merged_df_HbA1c$Pos, merged_df_HbA1c$Mut_aa)
+
+# --- Load IAPP nucleation scores and create ID ---
+load("../INDEL_datasets.RData")
+Singles.df$mut_ID <- paste0(Singles.df$WT_AA, Singles.df$Pos, Singles.df$Mut)
+
+## Panel A
+# Join mutation nucleation scores
+merged_df_diag <- table_aa_seq %>%
+  unnest(cols = c(list_chr_pos_in_codon)) %>%
+  right_join(diag_df, by = c("list_chr_pos_in_codon" = "Position")) %>%
+  inner_join(tcodon, by = c("list_chr_pos_in_codon" = "Chromosome_position")) %>%
+  mutate(Mutated_codon = mapply(function(txt, pos, repl) {
+    str_sub(txt, pos, pos) <- repl
+    txt
+  }, codon, Codon_position, Alternate)) %>%
+  mutate(Mut_aa = codon_table[Mutated_codon],
+         mut_ID = paste0(WT_AA, Pos, Mut_aa)) %>%
+  inner_join(Singles.df, by = "mut_ID")
+
+merged_df_diag$Diabetes <- factor(merged_df_diag$Diabetes, levels = c("No diabetes\n(n = 429535)", "Diabetes\n(n = 19120)"))
+merged_df_diag$Cohort.AF_rescaled <- merged_df_diag$Cohort.AF * 1e5
+
+# Split by diabetes status
+diag0_df <- filter(merged_df_diag, Diabetes == "No diabetes\n(n = 429535)")
+diag1_df <- filter(merged_df_diag, Diabetes == "Diabetes\n(n = 19120)")
+
+# Repeat nucleation scores by allele counts for statistics
+store_diag0 <- unlist(lapply(seq_len(nrow(diag0_df)), function(i) rep(diag0_df$nscore_c[i], diag0_df$Cohort.Allele.Count[i])))
+store_diag1 <- unlist(lapply(seq_len(nrow(diag1_df)), function(i) rep(diag1_df$nscore_c[i], diag1_df$Cohort.Allele.Count[i])))
+
+size_range <- c(min(merged_df_diag$Cohort.AF_rescaled), max(merged_df_diag$Cohort.AF_rescaled))
+size_breaks <- seq(size_range[1], size_range[2], length.out = 5)
+original_size_labels <- seq(from = size_range[1] / 1e5, to = size_range[2] / 1e5, length.out = 5)
+
+# Plot nucleation scores by diabetes diagnosis
+p_diag <- ggplot(merged_df_diag, aes(x = Diabetes, y = nscore_c, colour = category_fdr)) +
+  geom_point(aes(size = Cohort.AF_rescaled), alpha = 0.4) +
+  scale_color_manual(values = colors_fdr, name = "") +
+  scale_size_continuous(range = size_range, breaks = size_breaks, labels = scales::scientific(original_size_labels)) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), panel.grid = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Nucleation score") +
+  geom_hline(yintercept = 0, linetype = "dotted") 
+p_diag
+ggsave(p_diag, filename = "Alelle frequency and nucleation scores in diabetes diagnosis.pdf")
+
+## Panel B
+# Join mutation nucleation scores with HbA1c data
+merged_df_HbA1c <- inner_join(merged_df_HbA1c, Singles.df)
+
+# Reorder HbA1c factor levels for plotting
+merged_df_HbA1c$HbA1c <- factor(merged_df_HbA1c$HbA1c, levels = c(
+  "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)", 
+  "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)", 
+  "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)"))
+
+# Rescale allele frequency for plotting sizes
+merged_df_HbA1c$Cohort.AF_rescaled <- merged_df_HbA1c$Cohort.AF * 1e5
+
+# Split data by HbA1c groups
+lowHb <- filter(merged_df_HbA1c, HbA1c == "No-risk\nHbA1c < 42 mmol/mol\n(n = 427269)")
+medHb <- filter(merged_df_HbA1c, HbA1c == "Prediabetes\nHbA1c 42-48 mmol/mol\n(n = 21440)")
+highHb <- filter(merged_df_HbA1c, HbA1c == "Diabetes\nHbA1c > 48 mmol/mol\n(n = 17448)")
+
+# Repeat nucleation scores by allele count for statistical tests
+store_low <- unlist(lapply(seq_len(nrow(lowHb)), function(i) rep(lowHb$nscore_c[i], lowHb$Cohort.Allele.Count[i])))
+store_med <- unlist(lapply(seq_len(nrow(medHb)), function(i) rep(medHb$nscore_c[i], medHb$Cohort.Allele.Count[i])))
+store_high <- unlist(lapply(seq_len(nrow(highHb)), function(i) rep(highHb$nscore_c[i], highHb$Cohort.Allele.Count[i])))
+
+# Plot nucleation scores colored by NS category and sized by allele frequency
+size_range <- c(min(merged_df_HbA1c$Cohort.AF_rescaled), max(merged_df_HbA1c$Cohort.AF_rescaled))
+size_breaks <- seq(size_range[1], size_range[2], length.out = 5)
+original_size_labels <- seq(from = size_range[1] / 1e5, to = size_range[2] / 1e5, length.out = 5)
+
+p <- ggplot(merged_df_HbA1c, aes(x = HbA1c, y = nscore_c, colour = category_fdr)) +
+  geom_point(aes(size = Cohort.AF_rescaled), alpha = 0.4) +
+  scale_color_manual(values = colors_fdr, name = "") +
+  scale_size_continuous(range = size_range, breaks = size_breaks, labels = scales::scientific(original_size_labels)) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), panel.grid = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Nucleation score") +
+  geom_hline(yintercept = 0, linetype = "dotted")
+p
+ggsave(p, filename = "Alelle frequency and nucleation scores in HbA1c levels.pdf")
+
+
+#Panels C and D - odds ratio
+
+Mutants_in_cases <- c("A5T", "C7R", "H18D", "S20G", "F23V", "A25T", "Y37C")
+Mutants_in_controls <- c("K1E", "N3S", "A5T", "C7R", "T9M", "T9K", "Q10K", "Q10R", "R11C", "R11H", "R11L", "V17A", "H18D", "H18Y", "S20G", "S20R", "N21D", "A25T", "A25V", "S29F", "V32M", "G33R", "T36A", "Y37C")
+
+WT_like <- c("12_21378263_A_G", "12_21378268_G_A", "12_21378274_T_C", "12_21378286_C_T", "12_21378293_C_T", "12_21378305_T_C", "12_21378307_C_G", "12_21378307_C_T", "12_21378313_A_G", "12_21378315_C_A", "12_21378316_A_G", "12_21378352_G_A", "12_21378365_A_G")
+NS_inc <- c("12_21378287_G_A", "12_21378287_G_T", "12_21378329_C_T", "12_21378328_G_A", "12_21378341_C_T", "12_21378322_T_G")
+NS_dec <- c("12_21378281_C_A", "12_21378256_A_G", "12_21378281_C_T", "12_21378283_C_A", "12_21378284_A_G", "12_21378324_T_G", "12_21378349_G_A", "12_21378361_A_G")
+
+#Table with all the participant IDs that have any IAPP substitution at the UKBB. 
+ukbb_IAPP_SNPs <- read_excel(path = "skat-o_iapp.xlsx")
+
+# Matrix of IAPP SNPs (columns) by participant IDs (rows), indicating the presence (1) or absence (0) of each SNP per participant based on UK Biobank data.
+df_wide <- ukbb_IAPP_SNPs %>% mutate(value = 1) %>%  pivot_wider(names_from = Allele, values_from = value, values_fill = list(value = 0))
+
+#Load participant table from UKBB containing diabetes diagnostic, age, sex and bmi and participant ID. 
+cov_and_pheno_diagnostic <- read.table("Pheno_table_Diagnostic", header = TRUE)
+cov_and_pheno_diagnostic <- cov_and_pheno_diagnostic[order(cov_and_pheno_diagnostic$eid), ]
+
+# Assign 0 in all columns to participants with no IAPP SNPs
+missing_ids_novariant <- setdiff(union(cov_and_pheno_diagnostic$eid, df_wide$`Participant ID`), intersect(cov_and_pheno_diagnostic$eid, df_wide$`Participant ID`))
+df_controls <- data.frame(missing_ids_novariant, matrix(0, nrow = length(missing_ids_novariant), ncol = ncol(df_wide) - 1))
+colnames(df_controls) <- colnames(df_wide)
+df_wide <- rbind(df_controls, df_wide)
+order_vector <- df_wide$`Participant ID`
+df_wide <- df_wide[order(order_vector), ]
+
+#Join table with the phenotypic data and the table with IAPP SNPs. 
+cov_and_pheno_diagnostic <- right_join(cov_and_pheno_diagnostic, df_wide, by = c("eid" = "Participant ID"), copy = TRUE)
+cov_and_pheno_diagnostic <- cov_and_pheno_diagnostic[order(cov_and_pheno_diagnostic$eid), ]
+
+# Extract phenotype information for diabetes case-control status
+pheno_tb <- as.numeric(cov_and_pheno_diagnostic[, c("diabetes_cc")])
+
+# Get burden (sum) of the number of variants in each nucleation category
+NS_inc_var <- rowSums(cov_and_pheno_diagnostic[, NS_inc])
+NS_dec_var <- rowSums(cov_and_pheno_diagnostic[, NS_dec])
+NS_WT_var <- rowSums(cov_and_pheno_diagnostic[, WT_like])
+
+# Extract covariates: sex, age, and BMI
+sex <- cov_and_pheno_diagnostic[, "p22001"]
+age <- cov_and_pheno_diagnostic[, "p21022"]
+bmi <- cov_and_pheno_diagnostic[, "p23104_i0"]
+
+# Build data frames for logistic regression input:
+dfinc <- data.frame(NSinc_variants = NS_inc_var,
+  diabetes_yes_no  = pheno_tb, age = age, sex = sex, bmi = bmi)
+
+dfdec <- data.frame(NSdec_variants = NS_dec_var,
+  diabetes_yes_no  = pheno_tb, age = age, sex = sex, bmi = bmi)
+
+dfwt <- data.frame(NSwt_variants = NS_WT_var,
+  diabetes_yes_no  = pheno_tb, age = age, sex = sex, bmi = bmi)
+
+# Fit logistic regression model
+modelinc <- logistf(diabetes_yes_no ~ NSinc_variants + age + bmi + sex, data = dfinc, family = binomial)
+modeldec <- logistf(diabetes_yes_no ~ NSdec_variants + age + bmi + sex, data = dfdec, family = binomial)
+modelwt <- logistf(diabetes_yes_no ~ NSwt_variants + age + bmi + sex, data = dfwt, family = binomial)
+
+# Extract odds ratio and confidence intervals
+NS_inc_OR <- as.data.frame(exp(cbind(OR = coef(modelinc), confint(modelinc))))
+NS_dec_OR <- as.data.frame(exp(cbind(OR = coef(modeldec), confint(modeldec))))
+NS_wt_OR <- as.data.frame(exp(cbind(OR = coef(modelwt), confint(modelwt))))
+
+# Rename columns for clarity
+NS_inc_OR$Variant <- "NS_inc variants\n22 carriers\nNo. of variants = 6"
+NS_dec_OR$Variant <- "NS_dec variants\n39 carriers\nNo. of variants = 8"
+NS_wt_OR$Variant <- "WT-like variants\n131 carriers\nNo. of variants = 13"
+model_results_diab <- rbind(NS_dec_OR, NS_wt_OR, NS_inc_OR)
+colnames(model_results_diab) <- c("OR", "Lower_CI", "Upper_CI", "Variant")
+model_results_diab$Variable <- row.names(model_results_diab)
+
+# Keep only OR for the phenotypical variant assayed: diabetes diagnostic
+model_results_diab <- model_results_diab[grepl(pattern = "variants", x = model_results_diab$Variable), ]
+model_results_diab$annotation <- paste(round(model_results_diab$OR, digits = 2), " (", round(model_results_diab$Lower_CI, digits = 2), "-", round(model_results_diab$Upper_CI, digits = 2), ")", sep = "")
+model_results_diab$p_val <- ""
+model_results_diab[model_results_diab$Variant == "NS_inc variants\n22 carriers\nNo. of variants = 6", ]$p_val <- paste("p = ", round(modelinc$prob[-1][1], digits = 3))
+model_results_diab[model_results_diab$Variant == "NS_dec variants\n39 carriers\nNo. of variants = 8", ]$p_val <- paste("p = ", round(modeldec$prob[-1][1], digits = 3))
+model_results_diab[model_results_diab$Variant == "WT-like variants\n131 carriers\nNo. of variants = 13", ]$p_val <- paste("p = ", round(modelwt$prob[-1][1], digits = 3))
+model_results_diab$Phenotype = "Diabetes diagnosis"
+
+
+#Load participant table from UKBB containing HbA1c level status, age, sex and bmi and participant ID. 
+cov_and_pheno_HbA1c <- read.table("Pheno_table_Hb1Ac", header = TRUE)
+cov_and_pheno_HbA1c <- cov_and_pheno_HbA1c[order(cov_and_pheno_HbA1c$eid), ]
+cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p30750_i0), ]$p30750_i0 <- cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p30750_i0), ]$participant.p30750_i0
+cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p22001), ]$p22001 <- cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p22001), ]$participant.p22001
+cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p21022), ]$p21022 <- cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p21022), ]$participant.p21022
+cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p23104_i0), ]$p23104_i0 <- cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$p23104_i0), ]$participant.p23104_i0
+cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$eid), ]$eid <- cov_and_pheno_HbA1c[is.na(cov_and_pheno_HbA1c$eid), ]$participant.eid
+
+# Assign 0 in all columns to participants with no IAPP SNPs
+missing_ids_novariant <- setdiff(union(cov_and_pheno_HbA1c$eid, df_wide$`Participant ID`), intersect(cov_and_pheno_HbA1c$eid, df_wide$`Participant ID`))
+df_controls <- data.frame(missing_ids_novariant, matrix(0, nrow = length(missing_ids_novariant), ncol = ncol(df_wide) - 1))
+colnames(df_controls) <- colnames(df_wide)
+df_wide <- rbind(df_controls, df_wide)
+order_vector <- df_wide$`Participant ID`
+df_wide <- df_wide[order(order_vector), ]
+
+#Join table with the phenotypic data and the table with IAPP SNPs. 
+cov_and_pheno_HbA1c <- right_join(cov_and_pheno_HbA1c, df_wide, by = c("eid" = "Participant ID"), copy = TRUE)
+cov_and_pheno_HbA1c <- cov_and_pheno_HbA1c[!(is.na(cov_and_pheno_HbA1c$Hb1Ac)), ]
+cov_and_pheno_HbA1c <- cov_and_pheno_HbA1c[cov_and_pheno_HbA1c$p30750_i0 <= 184 & cov_and_pheno_HbA1c$p30750_i0 >= 15, ]
+cov_and_pheno_HbA1c$binary <- ""
+cov_and_pheno_HbA1c[cov_and_pheno_HbA1c$Hb1Ac != "High", ]$binary <- 0
+cov_and_pheno_HbA1c[cov_and_pheno_HbA1c$Hb1Ac == "High", ]$binary <- 1
+
+# Extract phenotype information for HbA1c levels. 
+pheno_tb <- cov_and_pheno_HbA1c[, c("binary")]
+
+# Get burden (sum) of the number of variants in each nucleation category
+NS_inc_var <- rowSums(cov_and_pheno_HbA1c[, NS_inc])
+NS_dec_var <- rowSums(cov_and_pheno_HbA1c[, NS_dec])
+NS_WT_var <- rowSums(cov_and_pheno_HbA1c[, WT_like])
+
+# Extract covariates: sex, age, and BMI
+sex <- cov_and_pheno_HbA1c[, "p22001"]
+age <- cov_and_pheno_HbA1c[, "p21022"]
+bmi <- cov_and_pheno_HbA1c[, "p23104_i0"]
+
+# Build data frames for logistic regression input:
+dfinc <- data.frame(NSinc_variants = NS_inc_var, HbA1c = pheno_tb, age = age, sex = sex, bmi = bmi)
+dfdec <- data.frame(NSdec_variants = NS_dec_var, HbA1c = pheno_tb, age = age, sex = sex, bmi = bmi)
+dfwt <- data.frame(NSwt_variants = NS_WT_var, HbA1c = pheno_tb, age = age, sex = sex, bmi = bmi)
+
+# Fit logistic regression model
+modelinc <- logistf(as.numeric(HbA1c) ~ NSinc_variants + age + bmi + sex, data = dfinc, family = binomial)
+modeldec <- logistf(as.numeric(HbA1c) ~ NSdec_variants + age + bmi + sex, data = dfdec, family = binomial)
+modelwt <- logistf(as.numeric(HbA1c) ~ NSwt_variants + age + bmi + sex, data = dfwt, family = binomial)
+
+# Extract odds ratio and confidence intervals
+NS_inc_OR <- as.data.frame(exp(cbind(OR = coef(modelinc), confint(modelinc))))
+NS_dec_OR <- as.data.frame(exp(cbind(OR = coef(modeldec), confint(modeldec))))
+NS_wt_OR <- as.data.frame(exp(cbind(OR = coef(modelwt), confint(modelwt))))
+
+# Rename columns for clarity
+NS_inc_OR$Variant <- "NS_inc variants\n22 carriers\nNo. of variants = 6"
+NS_dec_OR$Variant <- "NS_dec variants\n39 carriers\nNo. of variants = 8"
+NS_wt_OR$Variant <- "WT-like variants\n131 carriers\nNo. of variants = 13"
+model_resultsHb1Ac <- rbind(NS_dec_OR, NS_wt_OR, NS_inc_OR)
+colnames(model_resultsHb1Ac) <- c("OR", "Lower_CI", "Upper_CI", "Variant")
+model_resultsHb1Ac$Variable <- row.names(model_resultsHb1Ac)
+
+# Keep only OR for the phenotype ssayed: HbA1c levels
+model_resultsHb1Ac <- model_resultsHb1Ac[grepl(pattern = "variants", x = model_resultsHb1Ac$Variable), ]
+model_resultsHb1Ac$annotation <- paste(round(model_resultsHb1Ac$OR, digits = 2), " (", round(model_resultsHb1Ac$Lower_CI, digits = 2), "-", round(model_resultsHb1Ac$Upper_CI, digits = 2), ")", sep = "")
+model_resultsHb1Ac$p_val <- ""
+model_resultsHb1Ac[model_resultsHb1Ac$Variant == "NS_inc variants\n22 carriers\nNo. of variants = 6", ]$p_val <- paste("p = ", round(modelinc$prob[-1][1], digits = 3))
+model_resultsHb1Ac[model_resultsHb1Ac$Variant == "NS_dec variants\n39 carriers\nNo. of variants = 8", ]$p_val <- paste("p = ", round(modeldec$prob[-1][1], digits = 3))
+model_resultsHb1Ac[model_resultsHb1Ac$Variant == "WT-like variants\n131 carriers\nNo. of variants = 13", ]$p_val <- paste("p = ", round(modelwt$prob[-1][1], digits = 3))
+model_resultsHb1Ac$Phenotype <- "HbA1c levels"
+
+#Combine results of both models - diagnostic of diabetes and HbA1c
+model_results_combined <- rbind(model_resultsHb1Ac, model_results_diab)
+
+# Create the OR plot. 
+p <- ggplot(model_results_combined, aes(x = Variant, y = OR, ymin = Lower_CI, ymax = Upper_CI)) +
+  geom_pointrange(color = "gray60", size = 1) +  # OR points with error bars
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black") +  # Reference line at OR = 1
+  coord_flip() +  # Flip the axis for better readability
+  labs(y = "Odds Ratio", x = "") +
+  theme_minimal() + theme(panel.grid.major = element_blank(), 
+                          panel.grid.minor = element_blank(),
+                          panel.border = element_blank(), 
+                          axis.line = element_line(color = 'black', size = 0.25),
+                          axis.title = element_text(size = 13),
+                          strip.text = element_text(size = 15)) 
+p <- p + geom_text(aes(label = annotation, y = 7), hjust = 0, size = 4, vjust = -0.5) 
+p <- p + facet_wrap(~Phenotype, drop = TRUE, scales = "free_x") + geom_text(aes(label = p_val, y = 7), hjust = 0, size = 4, vjust = 1.4)
+p
+ggsave(p, file = "OR_diabetes_diagnosis_and_HbA1c_levels.pdf", width = 9, height = 2.8)
