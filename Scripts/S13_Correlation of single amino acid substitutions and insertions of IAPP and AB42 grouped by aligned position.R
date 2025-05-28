@@ -39,7 +39,7 @@ insertions_IAPP$SEQ<-"IAPP"
 insertions_IAPP$pos_plotting <- equiv_dict_ins$plotting_number[match(insertions_IAPP$ins_pos, equiv_dict_ins$Pos_IAPP)]
 
 #AB42 dataset from Seuma et al. 
-load("Required files/INDEL_datasets_AB.Rdata")
+load("INDEL_datasets_AB.Rdata")
 deletions_reps_AB <- deletions_reps
 deletions.df_AB <- deletions.df
 insertions.df_AB <- insertions.df
