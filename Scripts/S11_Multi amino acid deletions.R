@@ -1,129 +1,160 @@
 
-## Load required packages
-require(ggplot2)
-require(stringr)
-require(ggpubr)
-require(reshape2)
-require(dplyr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
 
-## Load required data
-load("../INDEL.df.RData")
-load("../INDEL_datasets.RData")
+# Function to generate all possible deletions and plot heatmap
+plot_deletion_heatmap <- function(WT, mut_data, fitness_col = "fitness_merged",
+                                  fdr_col = "category_fdr", show_legend_inside = TRUE) {
+  # Split WT sequence into characters
+  WT_chars <- unlist(strsplit(WT, ""))
+  WT_length <- length(WT_chars)
+  
+  # ---------------------------
+  # Generate internal deletions
+  # ---------------------------
+  internal_deletions <- data.frame(
+    del_start = integer(),
+    del_end = integer(),
+    del_length = integer(),
+    mutant_seq = character()
+  )
+  
+  for(start_pos in 2:(WT_length-1)) {
+    for(end_pos in start_pos:(WT_length-1)) {
+      mutant_seq <- paste0(c(WT_chars[1:(start_pos-1)], WT_chars[(end_pos+1):WT_length]), collapse = "")
+      internal_deletions <- rbind(internal_deletions, data.frame(
+        del_start = start_pos,
+        del_end = end_pos,
+        del_length = end_pos - start_pos + 1,
+        mutant_seq = mutant_seq
+      ))
+    }
+  }
+  
+  # ---------------------------
+  # Generate truncations
+  # ---------------------------
+  truncations <- data.frame(
+    del_start = integer(),
+    del_end = integer(),
+    del_length = integer(),
+    mutant_seq = character()
+  )
+  
+  # N-terminal truncations
+  for(start_pos in 2:WT_length) {
+    mutant_seq <- paste0(WT_chars[start_pos:WT_length], collapse = "")
+    truncations <- rbind(truncations, data.frame(
+      del_start = 1,
+      del_end = start_pos - 1,
+      del_length = start_pos - 1,
+      mutant_seq = mutant_seq
+    ))
+  }
+  
+  # C-terminal truncations
+  for(end_pos in 1:(WT_length-1)) {
+    mutant_seq <- paste0(WT_chars[1:end_pos], collapse = "")
+    truncations <- rbind(truncations, data.frame(
+      del_start = end_pos + 1,
+      del_end = WT_length,
+      del_length = WT_length - end_pos,
+      mutant_seq = mutant_seq
+    ))
+  }
+  
+  truncations <- unique(truncations)
+  
+  # Combine all deletions
+  all_deletions <- rbind(internal_deletions, truncations)
+  
+  # Merge with actual experimental data
+  merged_del <- left_join(all_deletions, mut_data, by = c("mutant_seq" = "aa_seq"))
+  
+  # Create upper-triangle grid for heatmap
+  full_grid <- expand.grid(del_start = 1:WT_length, del_end = 1:WT_length) %>%
+    filter(del_start <= del_end)
+  
+  # Ensure correct start and end
+  merged_del$del_start <- merged_del$del_start.x %||% merged_del$del_start
+  merged_del$del_end <- merged_del$del_end.x %||% merged_del$del_end
+  
+  heatmap_df <- full_grid %>%
+    left_join(merged_del, by = c("del_start", "del_end"))
+  
+  # ---------------------------
+  # Define colors
+  # ---------------------------
+  min_val <- abs(min(mut_data[[fitness_col]], na.rm = TRUE))
+  max_val <- abs(max(mut_data[[fitness_col]], na.rm = TRUE))
+  cols <- c(
+    colorRampPalette(c("brown3", "grey95"))((min_val/(min_val+max_val)*100)-0.5),
+    colorRampPalette("grey95")(1),
+    colorRampPalette(c("grey95", "darkblue"), bias=1)((max_val/(min_val+max_val)*100)-0.5)
+  )
+  
+  # X and Y labels
+  IAPPseq_pos <- paste0(WT_chars, "\n", 1:WT_length)
+  IAPPseq_pos_y <- paste0(WT_chars, 1:WT_length)
+  
+  # ---------------------------
+  # Plot fitness heatmap
+  # ---------------------------
+  p_fit <- ggplot(heatmap_df, aes(x = factor(del_start, levels = 1:WT_length),
+                                  y = factor(del_end, levels = 1:WT_length),
+                                  fill = .data[[fitness_col]])) +
+    geom_tile(color = "white") +
+    scale_fill_gradientn(colors = cols, limits = c(-min_val, max_val), na.value = "grey60") +
+    labs(x = "First deleted position", y = "Last deleted position", fill = "Nucleation\nscore") +
+    theme_bw() +
+    theme(panel.border = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_x_discrete(labels = IAPPseq_pos) +
+    scale_y_discrete(labels = IAPPseq_pos_y, position = "left")
+  
+  if(show_legend_inside) {
+    p_fit <- p_fit + theme(legend.position = c(0.8, 0.2),
+                           legend.background = element_rect(fill = "white", color = "black"))
+  }
+  
+  # ---------------------------
+  # Plot FDR category heatmap
+  # ---------------------------
+  colors_fdr <- c("darkred", "darkblue", "white")
+  p_fdr <- ggplot(heatmap_df, aes(x = factor(del_start, levels = 1:WT_length),
+                                  y = factor(del_end, levels = 1:WT_length),
+                                  fill = .data[[fdr_col]])) +
+    geom_tile(color = "white") +
+    scale_fill_manual(values = colors_fdr, na.value = "grey60", name = "Nucleation\nscore (FDR=0.1)") +
+    labs(x = "First deleted position", y = "Last deleted position") +
+    theme_bw() +
+    theme(panel.border = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_x_discrete(labels = IAPPseq_pos) +
+    scale_y_discrete(labels = IAPPseq_pos_y, position = "left")
+  
+  if(show_legend_inside) {
+    p_fdr <- p_fdr + theme(legend.position = c(0.8, 0.2),
+                           legend.background = element_rect(fill = "white", color = "black"))
+  }
+  
+  return(list(fitness_heatmap = p_fit, fdr_heatmap = p_fdr, heatmap_data = heatmap_df))
+}
 
-#Define aesthetics and constants for plotting
-IAPP_wt<-"KCNTATCATQRLANFLVHSSNNFGAILSSTNVGSNTY"
-IAPPseq<-unlist(strsplit(IAPP_wt, ""))
-IAPPseq_pos<-paste0(IAPPseq, "\n", c(1:37))
-IAPPseq_pos_y <-paste0(IAPPseq, c(1:37))
-all_aa <- c("G","A","V","L","M","I","F","Y","W","K","R","D","E","S","T","C","N","Q","H", "P", "-")
+# ---------------------------
+# Example usage
+# ---------------------------
+WT = "KCNTATCATQRLANFLVHSSNNFGAILSSTNVGSNTY"
 
-## NS color gradient 
-min_val <-abs(min(INDEL.df[!is.na(INDEL.df$nscore_c),]$nscore_c))
-max_val <-abs(max(INDEL.df[!is.na(INDEL.df$nscore_c),]$nscore_c))
+load("All_mutants.RData")
 
-cols <- c(colorRampPalette(c( "brown3", "grey95"))((min_val/(min_val+max_val)*100)-0.5), colorRampPalette("grey95")(1),
-          colorRampPalette(c("grey95",  "darkblue"), bias=1)((max_val/(min_val+max_val)*100)-0.5))
+multiaa <- all_ds[all_ds$Mutation_type %in% c("C-terminal truncations", "N-terminal truncations", "Single aa deletions", "Multi aa deletions")]
 
-colors_fdr <- (c( "darkred", "darkblue", "white")) #Use when having only 3 levels
+result <- plot_deletion_heatmap(WT, multiaa)
+result$fitness_heatmap
+result$fdr_heatmap
 
-#Annotate starting and ending positions of deletions - positions are adjusted for different deletions that result in the same amino acid sequence. 
-splitted <- lapply(Deletions_reps$name, function(i) strsplit(i, split = ";")[[1]])
-splitted <- lapply(splitted, function(i) strsplit(i, split = "_")[[1]][3])
-Deletions_reps$del_start <- lapply(splitted, function(i) strsplit(i, split = "-")[[1]][1])
-Deletions_reps$del_start <- mapply(function(id, current_val) {
-  if (!is.na(id) && id != "") {
-    l <- strsplit(id, split = "_")[[1]][3]
-    strsplit(l, split = "-")[[1]][1]
-  } else {
-    current_val  # keep existing del_start value
-  }}, Deletions_reps$ID, Deletions_reps$del_start, SIMPLIFY = FALSE)
-
-
-Deletions_reps$del_end <- lapply(splitted, function(i) strsplit(i, split = "-")[[1]][2])
-Deletions_reps$del_end <- mapply(function(id, current_val) {
-  if (!is.na(id) && id != "") {
-    l <- strsplit(id, split = "_")[[1]][3]
-    strsplit(l, split = "-")[[1]][2]
-  } else {
-    current_val  # keep existing del_start value
-  }}, Deletions_reps$ID, Deletions_reps$del_end, SIMPLIFY = FALSE)
-Deletions_reps$del_length <- as.numeric(Deletions_reps$del_end) - as.numeric(Deletions_reps$del_start)
-
-Deletions <- Deletions_reps[,c("aa_seq","nscore_c", "sigma","p.adjust","category_fdr", "ID", "del_length", "del_start", "del_end")]
-
-#Add truncations and single amino acid deletions 
-
-truncations_to_add <- Truncation_reps[Truncation_reps$k_end==37 | Truncation_reps$k_start==1,
-                                   c("aa_seq","nscore_c", "sigma","p.adjust","category_fdr", "ID", "k_length", "k_start", "k_end")]
-
-truncations_to_add$del_length <- 37 - (as.numeric(truncations_to_add$k_length))
-truncations_to_add$del_start <- 0
-truncations_to_add[truncations_to_add$k_end==37,]$del_start <- 1
-truncations_to_add[truncations_to_add$k_start==1,]$del_start<-(truncations_to_add[truncations_to_add$k_start==1,]$k_end)+1
-
-truncations_to_add$del_end<-0
-truncations_to_add[truncations_to_add$k_start==1,]$del_end<-37
-truncations_to_add[truncations_to_add$k_end==37,]$del_end<-(truncations_to_add[truncations_to_add$k_end==37,]$k_start)-1
-
-single_dels_to_add <- Single_deletions_reps
-single_dels_to_add$del_length<-1
-single_dels_to_add$del_start<-single_dels_to_add$del_pos
-single_dels_to_add$del_end<-single_dels_to_add$del_pos
-
-#Merge multi-aa, single amino acid deletions and truncations
-deletions_map <- rbind(Deletions, 
-                     truncations_to_add[,c("aa_seq","nscore_c", "sigma","p.adjust","category_fdr", "ID", "del_length", "del_start", "del_end")],
-                     single_dels_to_add[,c("aa_seq","nscore_c", "sigma", "p.adjust", "category_fdr","ID", "del_length", "del_start", "del_end")])
-
-#Build a matrix with all possible deletions that will be filled with the deletions quantified in this assay. Missing deletions will be depicted as NA.
-all_dels <- expand.grid(c(1:37), c(1:37))
-colnames(all_dels)<-c("del_start", "del_end")
-all_dels<-all_dels[all_dels$del_start<=all_dels$del_end,]
-all_dels$del_length<-all_dels$del_end-all_dels$del_start+1
-all_dels<-all_dels[all_dels$del_length < 36,]
-all_dels$ID<-paste0("Del_k", all_dels$del_length, "_", all_dels$del_start, "-", all_dels$del_end)
-
-all_dels[all_dels$del_start==1 & all_dels$del_end!=1,]$ID<-paste0("kmer", 37-all_dels[all_dels$del_start==1& all_dels$del_end!=1,]$del_end, "_",
-                                                                  all_dels[all_dels$del_start==1& all_dels$del_end!=1,]$del_end+1, "-37")
-
-all_dels[all_dels$del_end==37 & all_dels$del_start!=37,]$ID<-paste0("kmer", 37-all_dels[all_dels$del_end==37 & all_dels$del_start!=37,]$del_length, 
-                                                                    "_1-",37-all_dels[all_dels$del_end== 37 & all_dels$del_start!=37,]$del_length)
-
-all_dels$paste_ID <- paste(all_dels$del_start, "-", all_dels$del_end)
-deletions_map$paste_ID <- paste(deletions_map$del_start, "-", deletions_map$del_end)
-
-missing_dels <- all_dels[!all_dels$paste_ID %in% deletions_map$paste_ID, ]
-missing_dels[, c("aa_seq", "nscore_c", "sigma", "p.adjust", "category_fdr")] <- NA
-
-
-heatmap_deletions_map <- rbind(deletions_map, missing_dels)
-
-
-#Plot multi amino acid deletions heatmap 
-
-p_deletions <- ggplot(heatmap_deletions_map, aes(x=factor(del_start, levels=c(1:37)), 
-                                               y=factor(del_end, levels = c(1:37)), fill=nscore_c))+
-  theme_bw()+
-  geom_tile(color="white")+
-  #geom_tile(data=heatmap_deletions_map[heatmap_deletions_map$box=="fAD",],color="black", fill=NA, size=1)+
-  scale_fill_gradientn(colors=cols, limits=c(-min_val, max_val), na.value = "grey60")+
-  labs(x="First deleted position", y="Last deleted position", fill="Nucleation\nscore")+
-  theme(panel.border = element_blank(),
-        panel.grid.minor = element_blank())+
-  scale_x_discrete(labels=IAPPseq_pos)+
-  scale_y_discrete(labels=IAPPseq_pos_y, position = "left")
-ggsave(p_deletions, filename = "Multi amino acid deletions heatmap.pdf", width = 9, height = 9)
-
-#Plot multi amino acid deletions heatmap coloured by FDR category
-
-p_deletions_fdr <- ggplot(heatmap_deletions_map, aes(x=factor(del_start, levels=c(1:37)), 
-                                                 y=factor(del_end, levels = c(1:37)), fill=category_fdr))+
-  theme_bw()+
-  geom_tile(color="white")+
-  scale_fill_manual(values = colors_fdr, na.value = "grey60", name = "Nucleation\nscore") +
-  labs(x="First deleted position", y="Last deleted position", fill="Nucleation\nscore")+
-  theme(panel.border = element_blank(),
-        panel.grid.minor = element_blank())+
-  scale_x_discrete(labels=IAPPseq_pos)+
-  scale_y_discrete(labels=IAPPseq_pos_y, position = "left")
-ggsave(p_deletions_fdr, filename = "Multi amino acid deletions heatmap by FDR.pdf", width = 9, height = 9)
+# Save plots
+ggsave(result$fitness_heatmap, filename = "Multi_amino_acid_deletions_heatmap.pdf", width = 9, height = 9)
+ggsave(result$fdr_heatmap, filename = "Multi_amino_acid_deletions_heatmap_by_FDR.pdf", width = 9, height = 9)
