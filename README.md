@@ -1,8 +1,8 @@
 # MAVE-IAPP
 
-Raw sequencing data and the processed data table required for running the pipeline are deposited in NCBI's Gene Expression Omnibus (GEO) as GSE281555. 
+Raw sequencing data are deposited in the European Nucleotide Archive (ENA) under project accession number: PRJEB10403
 
-- Script 00A and 00B are required to obtain the data tables needed to complete the figures. 
+- Scripts 00A and 00B are required to obtain the data tables needed to complete the figures. 
 - Script F1-F6 & S1-S15 can be run independently and contain all the code required to create all the figures in the manuscript. 
 - Required data folder contains all the required data to run all the scripts found in the repository.
 
